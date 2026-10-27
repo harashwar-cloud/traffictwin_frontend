@@ -20,6 +20,10 @@ import {
   Check,
   RefreshCw,
   Zap,
+  XCircle,
+  AlertCircle,
+  Radio,
+  FileCheck,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -43,6 +47,8 @@ import type {
   AuditLogEntry,
   SimulationScenarioType,
   ApproachDemand,
+  VideoReadinessReport,
+  SignalStatusResponse,
 } from '../types';
 
 export const AdaptiveSignalControl: React.FC = () => {
@@ -58,6 +64,15 @@ export const AdaptiveSignalControl: React.FC = () => {
   const [planComparison, setPlanComparison] = useState<PlanComparison | null>(null);
   const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
   
+  // Video Readiness & Authoritative Signal Timing States (PART 2 & PART 5)
+  const [videoReadiness, setVideoReadiness] = useState<VideoReadinessReport | null>(null);
+  const [signalStatus, setSignalStatus] = useState<SignalStatusResponse | null>(null);
+  const [rejectionModalOpen, setRejectionModalOpen] = useState<boolean>(false);
+  const [rejectionReason, setRejectionReason] = useState<string>('Traffic pattern deviation / Manual override');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isApproving, setIsApproving] = useState<boolean>(false);
+  const [isRejecting, setIsRejecting] = useState<boolean>(false);
+
   // UI Controls
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
@@ -83,17 +98,20 @@ export const AdaptiveSignalControl: React.FC = () => {
     fetchIntersections();
   }, []);
 
-  // Fetch intersection config and current analytics
+  // Fetch intersection config, readiness, signal status, and analytics
   const fetchIntersectionData = useCallback(async (intId: string) => {
     if (!intId) return;
     setIsLoading(true);
+    setActionError(null);
     try {
-      const [conf, anal, rec, comp, log] = await Promise.allSettled([
+      const [conf, anal, rec, comp, logData, readiness, status] = await Promise.allSettled([
         api.getIntersection(intId),
         api.getIntersectionAnalytics(intId),
         api.generateSignalRecommendation(intId),
         api.compareSignalPlans(intId, selectedScenario),
         api.getIntersectionAuditLog(intId, 15),
+        api.getVideoReadiness(intId),
+        api.getSignalStatus(intId),
       ]);
 
       if (conf.status === 'fulfilled') setConfig(conf.value);
@@ -105,7 +123,9 @@ export const AdaptiveSignalControl: React.FC = () => {
         }
       }
       if (comp.status === 'fulfilled') setPlanComparison(comp.value);
-      if (log.status === 'fulfilled') setAuditLog(log.value);
+      if (logData.status === 'fulfilled') setAuditLog(logData.value);
+      if (readiness.status === 'fulfilled') setVideoReadiness(readiness.value);
+      if (status.status === 'fulfilled') setSignalStatus(status.value);
     } catch (err) {
       console.error('Error fetching intersection details', err);
     } finally {
@@ -117,38 +137,53 @@ export const AdaptiveSignalControl: React.FC = () => {
     fetchIntersectionData(selectedIntersectionId);
   }, [selectedIntersectionId, fetchIntersectionData]);
 
-  // Polling for live analytics & recommendations
+  // Polling for live analytics, authoritative signal countdown & video readiness (PART 5)
   useEffect(() => {
     if (!autoRefresh || !selectedIntersectionId) return;
-    const pollIntervalTime = videoProc.isAnalyzing ? 1500 : 4000;
+    const pollIntervalTime = videoProc.isAnalyzing ? 1500 : 3000;
     const interval = setInterval(async () => {
       try {
-        const [anal, rec] = await Promise.all([
+        const [anal, status, readiness] = await Promise.allSettled([
           api.getIntersectionAnalytics(selectedIntersectionId),
-          api.generateSignalRecommendation(selectedIntersectionId),
+          api.getSignalStatus(selectedIntersectionId),
+          api.getVideoReadiness(selectedIntersectionId),
         ]);
-        setAnalytics(anal);
-        setRecommendation(rec);
+        if (anal.status === 'fulfilled') setAnalytics(anal.value);
+        if (status.status === 'fulfilled') {
+          const newStatus = status.value;
+          setSignalStatus(newStatus);
+          // If 8s recommendation trigger is reached, automatically request scheduled recommendation
+          if (newStatus.should_trigger_recommendation && (!recommendation || recommendation.status !== 'APPROVED')) {
+            try {
+              const rec = await api.generateSignalRecommendation(selectedIntersectionId, 'SCHEDULED_8S');
+              setRecommendation(rec);
+            } catch (e) {
+              console.warn('8s auto-recommendation fetch failed', e);
+            }
+          }
+        }
+        if (readiness.status === 'fulfilled') setVideoReadiness(readiness.value);
       } catch (err) {
         console.warn('Auto-refresh poll failed', err);
       }
     }, pollIntervalTime);
     return () => clearInterval(interval);
-  }, [autoRefresh, selectedIntersectionId, videoProc.isAnalyzing]);
+  }, [autoRefresh, selectedIntersectionId, videoProc.isAnalyzing, recommendation]);
 
   // Handle recommendation generation trigger
   const handleGenerateRecommendation = async () => {
     setIsLoading(true);
+    setActionError(null);
     try {
-      const rec = await api.generateSignalRecommendation(selectedIntersectionId);
+      const rec = await api.generateSignalRecommendation(selectedIntersectionId, 'MANUAL');
       setRecommendation(rec);
       if (rec.recommended_phase?.proposed_green_sec) {
         setOverrideGreenSec(rec.recommended_phase.proposed_green_sec);
       }
-      const log = await api.getIntersectionAuditLog(selectedIntersectionId, 15);
-      setAuditLog(log);
-    } catch (err) {
-      console.error('Failed to generate recommendation', err);
+      const logData = await api.getIntersectionAuditLog(selectedIntersectionId, 15);
+      setAuditLog(logData);
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to generate recommendation');
     } finally {
       setIsLoading(false);
     }
@@ -162,8 +197,8 @@ export const AdaptiveSignalControl: React.FC = () => {
       setSimulationResult(result);
       const comparison = await api.compareSignalPlans(selectedIntersectionId, scenario);
       setPlanComparison(comparison);
-      const log = await api.getIntersectionAuditLog(selectedIntersectionId, 15);
-      setAuditLog(log);
+      const logData = await api.getIntersectionAuditLog(selectedIntersectionId, 15);
+      setAuditLog(logData);
     } catch (err) {
       console.error('Simulation failed', err);
     } finally {
@@ -171,12 +206,59 @@ export const AdaptiveSignalControl: React.FC = () => {
     }
   };
 
-  // Handle Officer Deployment / Approval
-  const handleDeployRecommendation = async () => {
-    setDeploySuccessMessage(`Plan approved! Recommended ${recommendation?.recommended_phase.phase_name || 'Phase'} green duration of ${overrideGreenSec}s logged to Traffic Controller telemetry.`);
-    setTimeout(() => {
-      setDeploySuccessMessage(null);
-    }, 5000);
+  // Handle Officer Approval (PART 6)
+  const handleApproveRecommendation = async () => {
+    if (!recommendation) return;
+    setIsApproving(true);
+    setActionError(null);
+    try {
+      const updated = await api.approveRecommendation(
+        selectedIntersectionId,
+        recommendation.recommendation_id,
+        overrideGreenSec,
+        'officer_1'
+      );
+      setRecommendation(updated);
+      setDeploySuccessMessage(
+        `Recommendation ${updated.recommendation_id} APPROVED! Phase "${updated.recommended_phase.phase_name}" green duration set to ${overrideGreenSec}s by officer_1.`
+      );
+      const logData = await api.getIntersectionAuditLog(selectedIntersectionId, 15);
+      setAuditLog(logData);
+      setTimeout(() => setDeploySuccessMessage(null), 6000);
+    } catch (err: any) {
+      setActionError(err.message || 'Approval rejected by server constraints.');
+      setTimeout(() => setActionError(null), 6000);
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  // Handle Officer Rejection (PART 6)
+  const handleRejectRecommendation = async () => {
+    if (!recommendation) return;
+    setIsRejecting(true);
+    setActionError(null);
+    try {
+      const updated = await api.rejectRecommendation(
+        selectedIntersectionId,
+        recommendation.recommendation_id,
+        rejectionReason,
+        'officer_1'
+      );
+      setRecommendation(updated);
+      setRejectionModalOpen(false);
+      setDeploySuccessMessage(
+        `Recommendation ${updated.recommendation_id} REJECTED. Reason: "${rejectionReason}". Baseline plan remains active.`
+      );
+      const logData = await api.getIntersectionAuditLog(selectedIntersectionId, 15);
+      setAuditLog(logData);
+      setTimeout(() => setDeploySuccessMessage(null), 6000);
+    } catch (err: any) {
+      setActionError(err.message || 'Rejection failed.');
+      setTimeout(() => setActionError(null), 6000);
+    } finally {
+      setIsRejecting(false);
+    }
   };
 
   // Direction helper icon
@@ -369,6 +451,265 @@ export const AdaptiveSignalControl: React.FC = () => {
           <span>{deploySuccessMessage}</span>
         </div>
       )}
+
+      {/* Action Error Toast */}
+      {actionError && (
+        <div
+          style={{
+            backgroundColor: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            color: '#ef4444',
+            padding: '14px 20px',
+            borderRadius: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            fontSize: '14px',
+            fontWeight: 600,
+            animation: 'fadeIn 0.3s ease',
+          }}
+        >
+          <XCircle size={20} />
+          <span>{actionError}</span>
+        </div>
+      )}
+
+      {/* 8-Second Trigger & Authoritative Signal Timing Banner (PART 5) */}
+      <div
+        style={{
+          backgroundColor: signalStatus?.should_trigger_recommendation
+            ? 'rgba(234, 179, 8, 0.12)'
+            : 'var(--bg-surface)',
+          border: signalStatus?.should_trigger_recommendation
+            ? '1px solid rgba(234, 179, 8, 0.45)'
+            : '1px solid var(--border-subtle)',
+          borderRadius: '12px',
+          padding: '14px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '12px',
+          boxShadow: signalStatus?.should_trigger_recommendation
+            ? '0 0 20px rgba(234, 179, 8, 0.2)'
+            : 'none',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div
+            style={{
+              width: '12px',
+              height: '12px',
+              borderRadius: '50%',
+              backgroundColor: signalStatus?.should_trigger_recommendation ? '#eab308' : '#22c55e',
+              boxShadow: signalStatus?.should_trigger_recommendation ? '0 0 10px #eab308' : '0 0 8px #22c55e',
+            }}
+          />
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--text-primary)' }}>
+                CURRENT ACTIVE PHASE: {signalStatus ? `${signalStatus.current_phase_id} (${signalStatus.current_phase_name})` : 'P1 (North-South Through)'}
+              </span>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(56, 189, 248, 0.3)',
+                }}
+              >
+                {signalStatus?.is_simulated ? 'SIMULATED CONTROLLER CYCLE' : 'AUTHORITATIVE CONTROLLER'}
+              </span>
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+              Served Approaches: {signalStatus?.served_approaches?.join(', ') || 'north, south'} • Cycle Duration: {signalStatus?.duration_sec || 35}s • Elapsed: {signalStatus?.elapsed_sec || 0}s
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {signalStatus?.is_timing_available ? (
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 700, textTransform: 'uppercase' }}>
+                Remaining Green
+              </div>
+              <div
+                style={{
+                  fontSize: '22px',
+                  fontWeight: 900,
+                  color: (signalStatus.remaining_green_sec || 0) <= 8 ? '#f59e0b' : '#22c55e',
+                  letterSpacing: '-0.02em',
+                }}
+              >
+                {signalStatus.remaining_green_sec?.toFixed(1)}s
+              </div>
+            </div>
+          ) : (
+            <span style={{ fontSize: '13px', color: '#ef4444', fontWeight: 700 }}>Signal timing unavailable</span>
+          )}
+
+          {signalStatus?.should_trigger_recommendation && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(234, 179, 8, 0.2)',
+                color: '#eab308',
+                border: '1px solid rgba(234, 179, 8, 0.4)',
+                fontSize: '12px',
+                fontWeight: 800,
+              }}
+            >
+              <Zap size={14} />
+              8s Trigger Active: Next Phase Prepared
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Video Readiness Panel (PART 2 — Exactly 3 or 4 Valid Sessions Required) */}
+      <div
+        style={{
+          backgroundColor: 'var(--bg-surface)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '12px',
+          padding: '18px 20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Radio size={18} style={{ color: '#38bdf8' }} />
+            <span style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-primary)' }}>
+              Video Readiness & Approach Mapping
+            </span>
+            <span
+              style={{
+                fontSize: '12px',
+                fontWeight: 700,
+                padding: '2px 10px',
+                borderRadius: '6px',
+                backgroundColor:
+                  videoReadiness?.is_ready
+                    ? 'rgba(34, 197, 94, 0.15)'
+                    : videoReadiness?.coverage_status === 'CONFIG_ERROR'
+                    ? 'rgba(239, 68, 68, 0.15)'
+                    : 'rgba(234, 179, 8, 0.15)',
+                color:
+                  videoReadiness?.is_ready
+                    ? '#22c55e'
+                    : videoReadiness?.coverage_status === 'CONFIG_ERROR'
+                    ? '#ef4444'
+                    : '#eab308',
+                border: `1px solid ${
+                  videoReadiness?.is_ready
+                    ? 'rgba(34, 197, 94, 0.3)'
+                    : videoReadiness?.coverage_status === 'CONFIG_ERROR'
+                    ? 'rgba(239, 68, 68, 0.3)'
+                    : 'rgba(234, 179, 8, 0.3)'
+                }`,
+              }}
+            >
+              Selected videos: {videoReadiness?.valid_session_count || 0}/3 required (Allowed: 3 or 4)
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+            <span style={{ color: 'var(--text-tertiary)' }}>Intersection Coverage:</span>
+            <strong
+              style={{
+                color:
+                  videoReadiness?.coverage_status === 'COMPLETE'
+                    ? '#22c55e'
+                    : videoReadiness?.coverage_status === 'PARTIAL'
+                    ? '#eab308'
+                    : '#ef4444',
+              }}
+            >
+              {videoReadiness?.coverage_status || 'EVALUATING'}
+            </strong>
+            <span style={{ color: 'var(--text-tertiary)' }}>•</span>
+            <span style={{ color: 'var(--text-tertiary)' }}>Recommendations:</span>
+            <strong style={{ color: videoReadiness?.recommendation_available ? '#22c55e' : '#ef4444' }}>
+              {videoReadiness?.recommendation_available ? 'READY' : 'UNAVAILABLE'}
+            </strong>
+          </div>
+        </div>
+
+        {/* Reasons when unavailable */}
+        {videoReadiness && videoReadiness.reasons && videoReadiness.reasons.length > 0 && !videoReadiness.is_ready && (
+          <div
+            style={{
+              backgroundColor: 'rgba(239, 68, 68, 0.08)',
+              border: '1px solid rgba(239, 68, 68, 0.25)',
+              borderRadius: '8px',
+              padding: '10px 14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              fontSize: '12px',
+              color: '#f87171',
+            }}
+          >
+            {videoReadiness.reasons.map((r, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <AlertCircle size={14} style={{ flexShrink: 0 }} />
+                <span>{r}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Selected Sessions Breakdown Grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+          {videoReadiness?.sessions?.map((sess) => (
+            <div
+              key={sess.session_id}
+              style={{
+                backgroundColor: 'var(--bg-surface-elevated)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '8px',
+                padding: '10px 12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {sess.video_name}
+                </span>
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    padding: '1px 6px',
+                    borderRadius: '4px',
+                    backgroundColor: sess.status === 'processing' ? 'rgba(6, 182, 212, 0.2)' : 'rgba(34, 197, 94, 0.15)',
+                    color: sess.status === 'processing' ? '#06b6d4' : '#22c55e',
+                  }}
+                >
+                  {sess.status.toUpperCase()}
+                </span>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                Frames: {sess.frames_processed} / {sess.total_frames} ({sess.progress_pct}%)
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                Mapped: {sess.roads_mapped.join(', ') || 'Approaches'}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Active Video Processing Session Banner */}
       {videoProc.isAnalyzing && (
@@ -916,27 +1257,82 @@ export const AdaptiveSignalControl: React.FC = () => {
               }}
             >
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                   <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)' }}>
                     Adaptive Decision Recommendation
                   </h3>
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      fontWeight: 700,
-                      padding: '2px 8px',
-                      borderRadius: '4px',
-                      backgroundColor: 'rgba(56, 189, 248, 0.15)',
-                      color: '#38bdf8',
-                    }}
-                  >
-                    CONFIDENCE: {Math.round((recommendation?.confidence || 0.95) * 100)}%
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        padding: '3px 8px',
+                        borderRadius: '4px',
+                        backgroundColor:
+                          recommendation?.status === 'APPROVED'
+                            ? 'rgba(34, 197, 94, 0.2)'
+                            : recommendation?.status === 'REJECTED'
+                            ? 'rgba(239, 68, 68, 0.2)'
+                            : 'rgba(234, 179, 8, 0.2)',
+                        color:
+                          recommendation?.status === 'APPROVED'
+                            ? '#22c55e'
+                            : recommendation?.status === 'REJECTED'
+                            ? '#ef4444'
+                            : '#eab308',
+                        border: `1px solid ${
+                          recommendation?.status === 'APPROVED'
+                            ? 'rgba(34, 197, 94, 0.4)'
+                            : recommendation?.status === 'REJECTED'
+                            ? 'rgba(239, 68, 68, 0.4)'
+                            : 'rgba(234, 179, 8, 0.4)'
+                        }`,
+                      }}
+                    >
+                      {recommendation?.status || 'PENDING_OFFICER_REVIEW'}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        padding: '3px 8px',
+                        borderRadius: '4px',
+                        backgroundColor: 'rgba(56, 189, 248, 0.15)',
+                        color: '#38bdf8',
+                      }}
+                    >
+                      CONFIDENCE: {Math.round((recommendation?.confidence || 0.95) * 100)}%
+                    </span>
+                  </div>
                 </div>
                 <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  Generated using Webster equisaturation formula & queuing theory
+                  Trigger: {recommendation?.trigger_source || 'SCHEDULED_8S'} • Rec ID: {recommendation?.recommendation_id || 'N/A'}
                 </p>
               </div>
+
+              {/* Officer Decision Audit Info (If Approved or Rejected) */}
+              {recommendation?.officer_decision && (
+                <div
+                  style={{
+                    backgroundColor: recommendation.officer_decision === 'APPROVED' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                    border: `1px solid ${recommendation.officer_decision === 'APPROVED' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    fontSize: '12px',
+                    color: recommendation.officer_decision === 'APPROVED' ? '#22c55e' : '#ef4444',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <FileCheck size={16} />
+                  <span>
+                    Officer decision: <strong>{recommendation.officer_decision}</strong> by {recommendation.officer_id || 'officer_1'} at {recommendation.decision_timestamp ? new Date(recommendation.decision_timestamp).toLocaleTimeString() : 'now'}.
+                    {recommendation.rejection_reason && ` Reason: "${recommendation.rejection_reason}".`}
+                    {recommendation.approved_green_sec && ` Approved duration: ${recommendation.approved_green_sec}s.`}
+                  </span>
+                </div>
+              )}
 
               {/* AI Narrative Reasoning */}
               <div
@@ -956,7 +1352,7 @@ export const AdaptiveSignalControl: React.FC = () => {
                   </div>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
                     {recPhase?.reason ||
-                      'North-South approach demand score is 0.76 (Queue: 28 veh, Flow: 47 veh/min). East-West demand is 0.28. Engine recommends allocating +8s green extension to Phase 1 while maintaining safe clearance for pedestrian crossings.'}
+                      'North-South approach demand score is elevated. Engine recommends allocating optimized green extension while maintaining safe clearance for pedestrian crossings.'}
                   </div>
                 </div>
               </div>
@@ -990,37 +1386,53 @@ export const AdaptiveSignalControl: React.FC = () => {
               </div>
 
               {/* Manual Fine-Tuning Slider */}
-              <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                    Officer Split Override:
-                  </span>
-                  <span style={{ fontSize: '14px', fontWeight: 800, color: '#38bdf8' }}>
-                    {overrideGreenSec} Seconds Green
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="15"
-                  max="60"
-                  step="1"
-                  value={overrideGreenSec}
-                  onChange={(e) => setOverrideGreenSec(Number(e.target.value))}
-                  style={{ width: '100%', accentColor: '#38bdf8', cursor: 'pointer' }}
-                />
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                  <span>Min 15s</span>
-                  <span>Baseline 30s</span>
-                  <span>Max 60s</span>
-                </div>
-              </div>
+              {(() => {
+                const activePhaseConfig = config?.phases?.find(p => p.phase_id === recPhase?.phase_id);
+                const minGreen = activePhaseConfig?.min_green_sec || 15;
+                const maxGreen = activePhaseConfig?.max_green_sec || 55;
+                const baselineGreen = config?.fixed_plan_green_times?.[recPhase?.phase_id || 'P1'] || 35;
 
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '10px' }}>
+                return (
+                  <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                        Officer Split Duration (Bounds Enforced):
+                      </span>
+                      <span style={{ fontSize: '14px', fontWeight: 800, color: '#38bdf8' }}>
+                        {overrideGreenSec} Seconds Green
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={minGreen}
+                      max={maxGreen}
+                      step="1"
+                      value={overrideGreenSec}
+                      disabled={recommendation?.status === 'APPROVED' || recommendation?.status === 'REJECTED'}
+                      onChange={(e) => setOverrideGreenSec(Number(e.target.value))}
+                      style={{ width: '100%', accentColor: '#38bdf8', cursor: 'pointer' }}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                      <span>Min {minGreen}s</span>
+                      <span>Baseline {baselineGreen}s</span>
+                      <span>Max {maxGreen}s</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Officer Action Buttons (PART 6) */}
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 <button
-                  onClick={handleDeployRecommendation}
+                  onClick={handleApproveRecommendation}
+                  disabled={
+                    isApproving ||
+                    recommendation?.status === 'APPROVED' ||
+                    recommendation?.status === 'REJECTED' ||
+                    (videoReadiness !== null && !videoReadiness.recommendation_available)
+                  }
                   style={{
-                    flex: 1,
+                    flex: 1.4,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -1029,17 +1441,60 @@ export const AdaptiveSignalControl: React.FC = () => {
                     borderRadius: '8px',
                     fontSize: '13px',
                     fontWeight: 800,
-                    cursor: 'pointer',
+                    cursor:
+                      isApproving || recommendation?.status === 'APPROVED' || recommendation?.status === 'REJECTED'
+                        ? 'not-allowed'
+                        : 'pointer',
                     border: 'none',
-                    backgroundColor: '#16a34a',
+                    backgroundColor: recommendation?.status === 'APPROVED' ? '#059669' : '#16a34a',
+                    opacity:
+                      recommendation?.status === 'REJECTED' || (videoReadiness !== null && !videoReadiness.recommendation_available)
+                        ? 0.5
+                        : 1,
                     color: '#ffffff',
                     boxShadow: '0 4px 14px rgba(22, 163, 74, 0.4)',
                     transition: 'all 0.2s ease',
                   }}
                 >
                   <ShieldCheck size={16} />
-                  Approve & Log Plan
+                  {isApproving
+                    ? 'Validating & Approving...'
+                    : recommendation?.status === 'APPROVED'
+                    ? 'Plan Approved'
+                    : 'Approve Recommendation'}
                 </button>
+
+                <button
+                  onClick={() => setRejectionModalOpen(true)}
+                  disabled={
+                    isRejecting ||
+                    recommendation?.status === 'APPROVED' ||
+                    recommendation?.status === 'REJECTED'
+                  }
+                  style={{
+                    flex: 0.8,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    cursor:
+                      recommendation?.status === 'APPROVED' || recommendation?.status === 'REJECTED'
+                        ? 'not-allowed'
+                        : 'pointer',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    backgroundColor: recommendation?.status === 'REJECTED' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(239, 68, 68, 0.1)',
+                    opacity: recommendation?.status === 'APPROVED' ? 0.5 : 1,
+                    color: '#ef4444',
+                  }}
+                >
+                  <XCircle size={15} />
+                  {recommendation?.status === 'REJECTED' ? 'Rejected' : 'Reject'}
+                </button>
+
                 <button
                   onClick={() => handleRunSimulation(selectedScenario)}
                   disabled={isSimulating}
@@ -1458,6 +1913,124 @@ export const AdaptiveSignalControl: React.FC = () => {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Officer Rejection Dialog Modal (PART 6) */}
+      {rejectionModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '20px',
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'var(--bg-surface)',
+              border: '1px solid var(--border-medium)',
+              borderRadius: '14px',
+              maxWidth: '480px',
+              width: '100%',
+              padding: '24px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '8px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#ef4444',
+                }}
+              >
+                <AlertTriangle size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>
+                  Reject Recommendation
+                </h3>
+                <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Record official rejection reason. Baseline fixed plan will remain active.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                REJECTION REASON:
+              </label>
+              <textarea
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                rows={3}
+                style={{
+                  backgroundColor: 'var(--bg-surface-elevated)',
+                  border: '1px solid var(--border-medium)',
+                  borderRadius: '8px',
+                  padding: '10px',
+                  color: 'var(--text-primary)',
+                  fontSize: '13px',
+                  outline: 'none',
+                  resize: 'none',
+                }}
+                placeholder="Specify reason (e.g. traffic incident, emergency vehicle corridor, manual timing override)..."
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button
+                onClick={() => setRejectionModalOpen(false)}
+                disabled={isRejecting}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  border: '1px solid var(--border-subtle)',
+                  backgroundColor: 'transparent',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRejectRecommendation}
+                disabled={isRejecting || !rejectionReason.trim()}
+                style={{
+                  padding: '10px 18px',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: 800,
+                  cursor: isRejecting ? 'not-allowed' : 'pointer',
+                  border: 'none',
+                  backgroundColor: '#ef4444',
+                  color: '#ffffff',
+                  boxShadow: '0 2px 10px rgba(239, 68, 68, 0.4)',
+                }}
+              >
+                {isRejecting ? 'Recording Rejection...' : 'Confirm Rejection'}
+              </button>
+            </div>
           </div>
         </div>
       )}

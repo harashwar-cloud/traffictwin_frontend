@@ -3,15 +3,25 @@ import type {
   IntersectionSummary, IntersectionConfig, IntersectionAnalytics,
   SignalRecommendation, SignalSimulationResult, PlanComparison,
   SignalPhasesResponse, AuditLogEntry, SimulationScenarioType,
+  VideoReadinessReport, SignalStatusResponse,
 } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+// Support both VITE_API_BASE_URL (standard) and VITE_API_URL (backward-compat)
+// Defaults to local backend during dev; production relies strictly on configured environment variable
+const rawApiBase = (
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+    ? '' // In production, if unset, use relative origin
+    : 'http://127.0.0.1:8000')
+);
+const API_BASE_URL = (rawApiBase || 'http://127.0.0.1:8000').replace(/\/+$/, '');
 
 class TrafficApiService {
   private baseUrl: string;
 
   constructor(baseUrl: string = API_BASE_URL) {
-    this.baseUrl = baseUrl;
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
   get apiBaseUrl(): string {
@@ -178,10 +188,11 @@ class TrafficApiService {
     return `${this.baseUrl}/api/stream/${jobId}`;
   }
 
-  getWsUrl(jobId: string): string {
+  getWsUrl(jobId?: string): string {
     const wsProto = this.baseUrl.startsWith('https') ? 'wss' : 'ws';
     const host = this.baseUrl.replace(/^https?:\/\//, '');
-    return `${wsProto}://${host}/ws/analysis/${jobId}`;
+    const endpoint = jobId ? `/ws/analysis/${jobId}` : '/ws/traffic';
+    return `${wsProto}://${host}${endpoint}`;
   }
 
   async getLiveAnalysisState(jobId: string) {
@@ -341,12 +352,68 @@ class TrafficApiService {
     return await res.json();
   }
 
-  async generateSignalRecommendation(intersectionId: string): Promise<SignalRecommendation> {
+  async getVideoReadiness(intersectionId: string, sessionIds?: string[]): Promise<VideoReadinessReport> {
+    const query = sessionIds && sessionIds.length > 0 ? `?session_ids=${encodeURIComponent(sessionIds.join(','))}` : '';
+    const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/video-readiness${query}`);
+    if (!res.ok) throw new Error(`Failed to fetch video readiness for intersection ${intersectionId}`);
+    return await res.json();
+  }
+
+  async getSignalStatus(intersectionId: string, triggerSec = 8.0): Promise<SignalStatusResponse> {
+    const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/signal-status?trigger_threshold_sec=${triggerSec}`);
+    if (!res.ok) throw new Error(`Failed to fetch signal status for ${intersectionId}`);
+    return await res.json();
+  }
+
+  async generateSignalRecommendation(intersectionId: string, triggerSource: 'SCHEDULED_8S' | 'MANUAL' = 'MANUAL'): Promise<SignalRecommendation> {
     const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trigger_source: triggerSource }),
     });
     if (!res.ok) throw new Error(`Failed to generate recommendation for ${intersectionId}`);
+    return await res.json();
+  }
+
+  async approveRecommendation(
+    intersectionId: string,
+    recommendationId: string,
+    approvedGreenSec: number,
+    officerId = 'officer_1'
+  ): Promise<SignalRecommendation> {
+    const res = await fetch(
+      `${this.baseUrl}/api/intersections/${intersectionId}/recommendations/${recommendationId}/approve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ officer_id: officerId, approved_green_sec: approvedGreenSec }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any)?.detail || `Failed to approve recommendation ${recommendationId}`);
+    }
+    return await res.json();
+  }
+
+  async rejectRecommendation(
+    intersectionId: string,
+    recommendationId: string,
+    rejectionReason?: string,
+    officerId = 'officer_1'
+  ): Promise<SignalRecommendation> {
+    const res = await fetch(
+      `${this.baseUrl}/api/intersections/${intersectionId}/recommendations/${recommendationId}/reject`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ officer_id: officerId, rejection_reason: rejectionReason }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any)?.detail || `Failed to reject recommendation ${recommendationId}`);
+    }
     return await res.json();
   }
 

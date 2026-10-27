@@ -404,6 +404,18 @@ export interface PhaseScore {
   served_approaches: string[];
 }
 
+export type RecommendationStatus =
+  | 'WAITING_FOR_DATA'
+  | 'READY'
+  | 'PENDING_OFFICER_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'EXPIRED'
+  | 'SUPERSEDED'
+  | 'INVALIDATED'
+  | 'GENERATED'
+  | 'CONSTRAINT_FAILED';
+
 export interface SignalRecommendation {
   recommendation_id: string;
   intersection_id: string;
@@ -419,7 +431,7 @@ export interface SignalRecommendation {
     note: string;
   } | null;
   data_quality: DataQualityFlag;
-  status: string;
+  status: RecommendationStatus | string;
   mode: string;
   confidence: number;
   fallback_to_baseline: boolean;
@@ -427,6 +439,55 @@ export interface SignalRecommendation {
   constraint_validation_passed: boolean;
   constraint_violations: string[];
   all_phase_scores: PhaseScore[];
+  officer_decision?: 'APPROVED' | 'REJECTED' | null;
+  officer_id?: string | null;
+  decision_timestamp?: string | null;
+  rejection_reason?: string | null;
+  approved_green_sec?: number | null;
+  trigger_source?: 'SCHEDULED_8S' | 'MANUAL';
+}
+
+export interface SessionReadinessItem {
+  session_id: string;
+  camera_id: string;
+  video_name: string;
+  status: string;
+  frames_processed: number;
+  total_frames: number;
+  progress_pct: number;
+  latest_timestamp_sec?: number | null;
+  roads_mapped: string[];
+  is_valid: boolean;
+  validation_note: string;
+}
+
+export interface VideoReadinessReport {
+  intersection_id: string;
+  is_ready: boolean;
+  valid_session_count: number;
+  required_min: number;
+  allowed_max: number;
+  coverage_status: 'COMPLETE' | 'PARTIAL' | 'MISSING' | 'INCOMPLETE' | 'CONFIG_ERROR' | string;
+  uncovered_approaches: string[];
+  recommendation_available: boolean;
+  reasons: string[];
+  sessions: SessionReadinessItem[];
+}
+
+export interface SignalStatusResponse {
+  intersection_id: string;
+  current_phase_id: string;
+  current_phase_name: string;
+  served_approaches: string[];
+  phase_start_time: string;
+  phase_end_time?: string | null;
+  duration_sec: number;
+  elapsed_sec: number;
+  remaining_green_sec?: number | null;
+  is_timing_available: boolean;
+  is_simulated: boolean;
+  recommendation_trigger_sec: number;
+  should_trigger_recommendation: boolean;
 }
 
 export interface IntersectionAnalytics {
