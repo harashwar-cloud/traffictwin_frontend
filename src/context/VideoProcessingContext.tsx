@@ -35,7 +35,7 @@ export interface VideoProcessingContextType {
   setUploadedVideoUrl: (url: string | null) => void;
   setVideoName: (name: string) => void;
   setVideoDuration: (dur: number) => void;
-  setManualRoads: (roads: ManualRoad[]) => void;
+  setManualRoads: React.Dispatch<React.SetStateAction<ManualRoad[]>>;
   setStatusMessage: (msg: string) => void;
   setVideoError: (err: boolean) => void;
 

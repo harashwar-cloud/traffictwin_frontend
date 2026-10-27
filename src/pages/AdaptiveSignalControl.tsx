@@ -32,6 +32,7 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { api } from '../services/api';
+import { useVideoProcessing } from '../context/VideoProcessingContext';
 import type {
   IntersectionSummary,
   IntersectionConfig,
@@ -45,6 +46,8 @@ import type {
 } from '../types';
 
 export const AdaptiveSignalControl: React.FC = () => {
+  const videoProc = useVideoProcessing();
+
   // State
   const [intersections, setIntersections] = useState<IntersectionSummary[]>([]);
   const [selectedIntersectionId, setSelectedIntersectionId] = useState<string>('int_cam5');
@@ -117,6 +120,7 @@ export const AdaptiveSignalControl: React.FC = () => {
   // Polling for live analytics & recommendations
   useEffect(() => {
     if (!autoRefresh || !selectedIntersectionId) return;
+    const pollIntervalTime = videoProc.isAnalyzing ? 1500 : 4000;
     const interval = setInterval(async () => {
       try {
         const [anal, rec] = await Promise.all([
@@ -128,9 +132,9 @@ export const AdaptiveSignalControl: React.FC = () => {
       } catch (err) {
         console.warn('Auto-refresh poll failed', err);
       }
-    }, 4000);
+    }, pollIntervalTime);
     return () => clearInterval(interval);
-  }, [autoRefresh, selectedIntersectionId]);
+  }, [autoRefresh, selectedIntersectionId, videoProc.isAnalyzing]);
 
   // Handle recommendation generation trigger
   const handleGenerateRecommendation = async () => {
@@ -363,6 +367,102 @@ export const AdaptiveSignalControl: React.FC = () => {
         >
           <CheckCircle2 size={20} />
           <span>{deploySuccessMessage}</span>
+        </div>
+      )}
+
+      {/* Active Video Processing Session Banner */}
+      {videoProc.isAnalyzing && (
+        <div
+          style={{
+            backgroundColor: 'rgba(6, 182, 212, 0.08)',
+            border: '1px solid rgba(6, 182, 212, 0.35)',
+            borderRadius: '12px',
+            padding: '14px 20px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            boxShadow: '0 4px 20px rgba(6, 182, 212, 0.1)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div
+                style={{
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '50%',
+                  backgroundColor: '#06b6d4',
+                  boxShadow: '0 0 10px #06b6d4',
+                }}
+              />
+              <span style={{ fontSize: '13px', fontWeight: 800, color: '#38bdf8', letterSpacing: '0.04em' }}>
+                LIVE VIDEO INFERENCE RUNNING IN BACKGROUND
+              </span>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  backgroundColor: 'rgba(15, 23, 42, 0.8)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border-subtle)',
+                }}
+              >
+                {videoProc.videoName} ({videoProc.activeJobId})
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '12px', fontWeight: 700, color: '#38bdf8' }}>
+              <span>
+                FRAME {videoProc.framesProcessed} / {videoProc.totalFrames} ({videoProc.progressPct}%)
+              </span>
+              <span>•</span>
+              <span>{videoProc.currentFps.toFixed(1)} FPS</span>
+              <span>•</span>
+              <span>{videoProc.videoTimeSeconds.toFixed(1)}s ELAPSED</span>
+            </div>
+          </div>
+
+          {/* Progress Bar */}
+          <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(15, 23, 42, 0.6)', borderRadius: '3px', overflow: 'hidden' }}>
+            <div
+              style={{
+                width: `${videoProc.progressPct}%`,
+                height: '100%',
+                background: 'linear-gradient(90deg, #06b6d4, #3b82f6, #10b981)',
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <span>Traffic demand metrics below are streaming live from active video detections without interruption across navigation.</span>
+            <span style={{ color: '#10b981', fontWeight: 600 }}>Adaptive Controller Active</span>
+          </div>
+        </div>
+      )}
+
+      {videoProc.inferenceComplete && videoProc.activeJobId && !videoProc.isAnalyzing && (
+        <div
+          style={{
+            backgroundColor: 'rgba(16, 185, 129, 0.08)',
+            border: '1px solid rgba(16, 185, 129, 0.3)',
+            borderRadius: '10px',
+            padding: '10px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '12px',
+            color: '#10b981',
+            fontWeight: 600,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <CheckCircle2 size={16} />
+            <span>Video Processing Completed: {videoProc.videoName} ({videoProc.framesProcessed} frames analyzed). Signal plans calculated on full video demand.</span>
+          </div>
+          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Job ID: {videoProc.activeJobId}</span>
         </div>
       )}
 

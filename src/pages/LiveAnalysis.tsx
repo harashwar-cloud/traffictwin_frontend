@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { CurrentState, LiveAnalysisState, RoadAnalytics } from '../types';
 import { api } from '../services/api';
+import { useVideoProcessing } from '../context/VideoProcessingContext';
 import { MetricCard } from '../components/common/MetricCard';
 import { ErrorBoundary } from '../components/common/ErrorBoundary';
 import {
@@ -303,21 +304,42 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
   initialPreset,
   onRemove,
 }) => {
-  const [selectedPreset, setSelectedPreset] = useState<string>(initialPreset || '');
-  const [videoName, setVideoName] = useState<string>('');
-  const [videoDuration, setVideoDuration] = useState<number>(0);
-  const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string | null>(null);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
-  const [inferenceComplete, setInferenceComplete] = useState<boolean>(false);
-  const [liveTelemetry, setLiveTelemetry] = useState<LiveAnalysisState | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [videoError, setVideoError] = useState<boolean>(false);
+  const proc = useVideoProcessing();
+  const isPrimary = index === 0;
+
+  // Local states for secondary multi-video cards
+  const [localPreset, setLocalPreset] = useState<string>(initialPreset || '');
+  const [localVideoName, setLocalVideoName] = useState<string>('');
+  const [localDuration, setLocalDuration] = useState<number>(0);
+  const [localUploadedVideoUrl, setLocalUploadedVideoUrl] = useState<string | null>(null);
+  const [localActiveJobId, setLocalActiveJobId] = useState<string | null>(null);
+  const [localIsAnalyzing, setLocalIsAnalyzing] = useState<boolean>(false);
+  const [localInferenceComplete, setLocalInferenceComplete] = useState<boolean>(false);
+  const [localLiveTelemetry, setLocalLiveTelemetry] = useState<LiveAnalysisState | null>(null);
+  const [localStatusMessage, setLocalStatusMessage] = useState<string>('');
+  const [localVideoError, setLocalVideoError] = useState<boolean>(false);
+  const [localManualRoads, setLocalManualRoads] = useState<ManualRoad[]>([]);
+
+  // Primary card binds directly to application-level VideoProcessingContext
+  const selectedPreset = isPrimary ? proc.selectedPreset : localPreset;
+  const videoName = isPrimary ? proc.videoName : localVideoName;
+  const videoDuration = isPrimary ? proc.videoDuration : localDuration;
+  const setVideoDuration = isPrimary ? proc.setVideoDuration : setLocalDuration;
+  const uploadedVideoUrl = isPrimary ? proc.uploadedVideoUrl : localUploadedVideoUrl;
+  const activeJobId = isPrimary ? proc.activeJobId : localActiveJobId;
+  const isAnalyzing = isPrimary ? proc.isAnalyzing : localIsAnalyzing;
+  const inferenceComplete = isPrimary ? proc.inferenceComplete : localInferenceComplete;
+  const liveTelemetry = isPrimary ? proc.liveTelemetry : localLiveTelemetry;
+  const statusMessage = isPrimary ? proc.statusMessage : localStatusMessage;
+  const videoError = isPrimary ? proc.videoError : localVideoError;
+  const setVideoError = isPrimary ? proc.setVideoError : setLocalVideoError;
+  const manualRoads = isPrimary ? proc.manualRoads : localManualRoads;
+  const setManualRoads = isPrimary ? proc.setManualRoads : setLocalManualRoads;
+
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
   // Manual ROI Drawing State
   const [drawingMode, setDrawingMode] = useState<boolean>(false);
-  const [manualRoads, setManualRoads] = useState<ManualRoad[]>([]);
   const [currentPolygon, setCurrentPolygon] = useState<Point[]>([]);
   const [mousePos, setMousePos] = useState<Point | null>(null);
   const [roadNameInput, setRoadNameInput] = useState<string>('');
@@ -336,22 +358,24 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
   const videoMetaRef = useRef(videoMeta);
   videoMetaRef.current = videoMeta;
 
-  // Cleanup on unmount
+  // Cleanup on unmount for secondary cards only (Primary card is persisted across route navigation)
   useEffect(() => {
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (uploadedVideoUrl && uploadedVideoUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(uploadedVideoUrl);
+      if (!isPrimary) {
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
+        if (localUploadedVideoUrl && localUploadedVideoUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(localUploadedVideoUrl);
+        }
       }
     };
-  }, [uploadedVideoUrl]);
+  }, [isPrimary, localUploadedVideoUrl]);
 
-  // WebSocket and polling telemetry listener for this specific video session
+  // Telemetry listener for secondary cards only (Primary card is tracked by VideoProcessingContext)
   useEffect(() => {
-    if (!activeJobId) {
+    if (isPrimary || !activeJobId) {
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -370,7 +394,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
           const data = JSON.parse(event.data) as LiveAnalysisState;
           if (data && data.frame_index !== undefined) {
             lastWsUpdate = now;
-            setLiveTelemetry(data);
+            setLocalLiveTelemetry(data);
           }
         } catch {}
       };
@@ -385,7 +409,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
           if (liveRes.ok) {
             const liveData = await liveRes.json();
             if (liveData && liveData.frame_index !== undefined) {
-              setLiveTelemetry(liveData);
+              setLocalLiveTelemetry(liveData);
             }
           }
         }
@@ -393,26 +417,17 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
         if (res.ok) {
           const statusData = await res.json();
           if (statusData.status === 'READY') {
-            setIsAnalyzing(false);
-            setInferenceComplete(true);
-            setStatusMessage('✓ Inference complete. Output video ready.');
-            try {
-              const liveRes = await fetch(`${api.apiBaseUrl}/api/analysis/${activeJobId}/live`);
-              if (liveRes.ok) {
-                const liveData = await liveRes.json();
-                if (liveData && liveData.frame_index !== undefined) {
-                  setLiveTelemetry(liveData);
-                }
-              }
-            } catch {}
+            setLocalIsAnalyzing(false);
+            setLocalInferenceComplete(true);
+            setLocalStatusMessage('✓ Inference complete. Output video ready.');
             clearInterval(pollInterval);
           } else if (statusData.status === 'ERROR') {
-            setIsAnalyzing(false);
-            setStatusMessage(`✗ Processing failed: ${statusData.error_message || 'Unknown error'}`);
+            setLocalIsAnalyzing(false);
+            setLocalStatusMessage(`✗ Processing failed: ${statusData.error_message || 'Unknown error'}`);
             clearInterval(pollInterval);
-          } else if (statusData.status === 'IDLE' && isAnalyzing) {
-            setIsAnalyzing(false);
-            setStatusMessage('Analysis stopped by user.');
+          } else if (statusData.status === 'IDLE' && localIsAnalyzing) {
+            setLocalIsAnalyzing(false);
+            setLocalStatusMessage('Analysis stopped by user.');
             clearInterval(pollInterval);
           }
         }
@@ -427,7 +442,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
         wsRef.current = null;
       }
     };
-  }, [activeJobId, isAnalyzing]);
+  }, [isPrimary, activeJobId, localIsAnalyzing]);
 
   // Coordinate alignment helper for canvas
   const getVideoRenderBox = useCallback(() => {
@@ -603,7 +618,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       polygon: [...currentPolygon],
       length_meters: parsedLength && parsedLength > 0 ? parsedLength : undefined,
     };
-    setManualRoads((prev) => [...prev, newRoad]);
+    setManualRoads((prev: ManualRoad[]) => [...prev, newRoad]);
     setCurrentPolygon([]);
     setMousePos(null);
     setShowNameDialog(false);
@@ -616,40 +631,48 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
   };
 
   const deleteRoad = (roadIdx: number) => {
-    setManualRoads((prev) => prev.filter((_, i) => i !== roadIdx));
+    setManualRoads((prev: ManualRoad[]) => prev.filter((_, i) => i !== roadIdx));
   };
 
   // Process chosen File
   const processSelectedFile = (file: File) => {
-    if (wsRef.current) {
+    if (!isPrimary && wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
-    setActiveJobId(null);
-    setIsAnalyzing(false);
-    setInferenceComplete(false);
-    setLiveTelemetry(null);
-    setVideoError(false);
-    setManualRoads([]);
+    setDrawingMode(true);
     setCurrentPolygon([]);
     setMousePos(null);
     setShowNameDialog(false);
-    setDrawingMode(true);
-    setVideoName(file.name);
 
     if (uploadedVideoUrl && uploadedVideoUrl.startsWith('blob:')) {
       URL.revokeObjectURL(uploadedVideoUrl);
     }
     const localUrl = URL.createObjectURL(file);
-    setUploadedVideoUrl(localUrl);
     setVideoMeta({ width: 1920, height: 1080, fps: 24 });
+
+    if (isPrimary) {
+      proc.resetSession();
+      proc.setVideoName(file.name);
+      proc.setUploadedVideoUrl(localUrl);
+      proc.setStatusMessage(`Uploading ${file.name}...`);
+    } else {
+      setLocalActiveJobId(null);
+      setLocalIsAnalyzing(false);
+      setLocalInferenceComplete(false);
+      setLocalLiveTelemetry(null);
+      setLocalVideoError(false);
+      setLocalManualRoads([]);
+      setLocalVideoName(file.name);
+      setLocalUploadedVideoUrl(localUrl);
+      setLocalStatusMessage(`Uploading ${file.name}...`);
+    }
 
     const formData = new FormData();
     formData.append('file', file);
     formData.append('camera_id', selectedPreset || 'cam_5');
 
     const fileSizeMb = (file.size / (1024 * 1024)).toFixed(1);
-    setStatusMessage(`Uploading ${file.name} (${fileSizeMb} MB)...`);
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${api.apiBaseUrl}/api/video/upload`);
@@ -657,7 +680,9 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
     xhr.upload.onprogress = (evt) => {
       if (evt.lengthComputable) {
         const percent = Math.round((evt.loaded / evt.total) * 100);
-        setStatusMessage(`Uploading ${file.name} (${fileSizeMb} MB) — ${percent}%...`);
+        const msg = `Uploading ${file.name} (${fileSizeMb} MB) — ${percent}%...`;
+        if (isPrimary) proc.setStatusMessage(msg);
+        else setLocalStatusMessage(msg);
       }
     };
 
@@ -665,10 +690,18 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           const data = JSON.parse(xhr.responseText);
-          setActiveJobId(data.job_id);
-          setStatusMessage(`✓ Upload complete: ${data.filename}. Draw roads on video, then click START ANALYSIS.`);
+          const msg = `✓ Upload complete: ${data.filename}. Draw roads on video, then click START ANALYSIS.`;
+          if (isPrimary) {
+            proc.setVideoName(data.filename);
+            proc.setStatusMessage(msg);
+          } else {
+            setLocalActiveJobId(data.job_id);
+            setLocalStatusMessage(msg);
+          }
         } catch {
-          setStatusMessage(`✓ Video uploaded successfully. Draw road boundaries or click START.`);
+          const msg = `✓ Video uploaded successfully. Draw road boundaries or click START.`;
+          if (isPrimary) proc.setStatusMessage(msg);
+          else setLocalStatusMessage(msg);
         }
       } else {
         let errMsg = `HTTP ${xhr.status}`;
@@ -676,12 +709,16 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
           const errData = JSON.parse(xhr.responseText);
           if (errData.detail) errMsg = errData.detail;
         } catch {}
-        setStatusMessage(`✗ Upload failed: ${errMsg}`);
+        const msg = `✗ Upload failed: ${errMsg}`;
+        if (isPrimary) proc.setStatusMessage(msg);
+        else setLocalStatusMessage(msg);
       }
     };
 
     xhr.onerror = () => {
-      setStatusMessage(`✗ Network Error during upload. Ensure backend is running.`);
+      const msg = `✗ Network Error during upload. Ensure backend is running.`;
+      if (isPrimary) proc.setStatusMessage(msg);
+      else setLocalStatusMessage(msg);
     };
 
     xhr.send(formData);
@@ -714,29 +751,36 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
   };
 
   const handleSelectPreset = (presetId: string) => {
-    setSelectedPreset(presetId);
     const source = FEED_SOURCES.find((s) => s.id === presetId);
     if (!source) return;
 
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
+    if (isPrimary) {
+      proc.resetSession();
+      proc.setSelectedPreset(presetId);
+      proc.setVideoName(source.name);
+      proc.setUploadedVideoUrl(api.getVideoUrl(source.videoUrl));
+      proc.setStatusMessage(`Selected ${source.name}. Click START ANALYSIS or Draw ROI.`);
+    } else {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setLocalPreset(presetId);
+      setLocalActiveJobId(null);
+      setLocalIsAnalyzing(false);
+      setLocalInferenceComplete(false);
+      setLocalLiveTelemetry(null);
+      setLocalVideoError(false);
+      setLocalVideoName(source.name);
+      setLocalManualRoads([]);
+      if (localUploadedVideoUrl && localUploadedVideoUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(localUploadedVideoUrl);
+      }
+      setLocalUploadedVideoUrl(api.getVideoUrl(source.videoUrl));
+      setLocalStatusMessage(`Selected ${source.name}. Click START ANALYSIS or Draw ROI.`);
     }
-    setActiveJobId(null);
-    setIsAnalyzing(false);
-    setInferenceComplete(false);
-    setLiveTelemetry(null);
-    setVideoError(false);
-    setVideoName(source.name);
     setDrawingMode(false);
-    setManualRoads([]);
     setCurrentPolygon([]);
-
-    if (uploadedVideoUrl && uploadedVideoUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(uploadedVideoUrl);
-    }
-    setUploadedVideoUrl(api.getVideoUrl(source.videoUrl));
-    setStatusMessage(`Selected ${source.name}. Click START ANALYSIS or Draw ROI.`);
   };
 
   const handleStartInference = async () => {
@@ -744,29 +788,42 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       alert('Please finish drawing at least one road region before processing.');
       return;
     }
+    if (isPrimary) {
+      try {
+        setDrawingMode(false);
+        await proc.startInference(activeJobId || selectedPreset || 'cam_5', 600, manualRoads);
+      } catch (err: any) {
+        console.error('Failed to start inference:', err);
+      }
+      return;
+    }
     try {
-      setIsAnalyzing(true);
-      setInferenceComplete(false);
-      setLiveTelemetry(null);
+      setLocalIsAnalyzing(true);
+      setLocalInferenceComplete(false);
+      setLocalLiveTelemetry(null);
       setDrawingMode(false);
-      setVideoError(false);
+      setLocalVideoError(false);
 
       const targetId = activeJobId || selectedPreset || 'cam_5';
       const res = await api.startInference(targetId, 600, manualRoads);
-      setActiveJobId(res.job_id);
-      setStatusMessage('✓ Inference started on GPU...');
+      setLocalActiveJobId(res.job_id);
+      setLocalStatusMessage('✓ Inference started on GPU...');
     } catch (err: any) {
-      setIsAnalyzing(false);
-      setStatusMessage(`✗ Error: ${err.message}`);
+      setLocalIsAnalyzing(false);
+      setLocalStatusMessage(`✗ Error: ${err.message}`);
     }
   };
 
   const handleStopInference = async () => {
+    if (isPrimary) {
+      await proc.stopInference();
+      return;
+    }
     if (!activeJobId) return;
     try {
       await api.stopInference(activeJobId);
-      setIsAnalyzing(false);
-      setStatusMessage('Analysis stopped.');
+      setLocalIsAnalyzing(false);
+      setLocalStatusMessage('Analysis stopped.');
     } catch (e: any) {
       console.warn('Stop failed:', e);
     }
@@ -931,24 +988,35 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       </div>
 
       {/* ─── STATUS & PROGRESS BANNER ──────────────────────────────── */}
-      {statusMessage && (
-        <div
-          className={`p-2.5 border rounded-xl flex items-center justify-between text-xs font-mono transition-all ${
-            statusMessage.startsWith('✗')
-              ? 'bg-red-950/60 border-red-600/50 text-red-300'
-              : statusMessage.startsWith('✓')
-              ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300'
-              : 'bg-cyan-950/70 border-cyan-600/50 text-cyan-300'
-          }`}
-        >
-          <div className="flex items-center space-x-2 truncate">
-            <Activity className={`w-3.5 h-3.5 flex-shrink-0 ${isAnalyzing ? 'animate-spin text-cyan-400' : ''}`} />
-            <span className="truncate">{statusMessage}</span>
+      {(statusMessage || isAnalyzing) && (
+        <div className="flex flex-col space-y-1.5">
+          <div
+            className={`p-2.5 border rounded-xl flex items-center justify-between text-xs font-mono transition-all ${
+              statusMessage.startsWith('✗')
+                ? 'bg-red-950/60 border-red-600/50 text-red-300'
+                : statusMessage.startsWith('✓')
+                ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300'
+                : 'bg-cyan-950/70 border-cyan-600/50 text-cyan-300'
+            }`}
+          >
+            <div className="flex items-center space-x-2 truncate">
+              <Activity className={`w-3.5 h-3.5 flex-shrink-0 ${isAnalyzing ? 'animate-spin text-cyan-400' : ''}`} />
+              <span className="truncate">{statusMessage || 'Inference actively processing in background...'}</span>
+            </div>
+            {isAnalyzing && (
+              <span className="font-bold text-cyan-400 ml-2 whitespace-nowrap">
+                F {(isPrimary ? proc.framesProcessed : liveTelemetry?.frame_index) || 0}/{(isPrimary ? proc.totalFrames : liveTelemetry?.total_frames) || 600} (
+                {isPrimary ? proc.progressPct : Math.round((((liveTelemetry?.frame_index || 0) / (liveTelemetry?.total_frames || 600)) * 100))}%) • {safeFixed(processingFps || (isPrimary ? proc.currentFps : 0), 1)} FPS
+              </span>
+            )}
           </div>
-          {liveTelemetry && isAnalyzing && (
-            <span className="font-bold text-cyan-400 ml-2 whitespace-nowrap">
-              F {liveTelemetry.frame_index}/{liveTelemetry.total_frames} • {safeFixed(processingFps, 1)} FPS
-            </span>
+          {isAnalyzing && (
+            <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-800 shadow-inner">
+              <div
+                className="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-full transition-all duration-300"
+                style={{ width: `${isPrimary ? proc.progressPct : Math.round((((liveTelemetry?.frame_index || 0) / (liveTelemetry?.total_frames || 600)) * 100))}%` }}
+              />
+            </div>
           )}
         </div>
       )}
