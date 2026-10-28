@@ -32,6 +32,7 @@ export interface VideoProcessingContextType {
   outputUrl: string | null;
 
   setSelectedPreset: (preset: string) => void;
+  setActiveJobId: (id: string | null) => void;
   setUploadedVideoUrl: (url: string | null) => void;
   setVideoName: (name: string) => void;
   setVideoDuration: (dur: number) => void;
@@ -248,7 +249,7 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
       setVideoError(false);
       setStatusMessage('Initializing video pipeline & GPU model...');
 
-      let targetId = selectedPreset || 'cam_5';
+      let targetId = (typeof presetOrFile === 'string' && presetOrFile) ? presetOrFile : (activeJobId || selectedPreset);
 
       if (presetOrFile instanceof File) {
         setStatusMessage('Uploading video to server...');
@@ -258,6 +259,10 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
         setVideoName(presetOrFile.name);
       } else if (typeof presetOrFile === 'string' && presetOrFile) {
         targetId = presetOrFile;
+      }
+
+      if (!targetId) {
+        throw new Error('No video selected or uploaded. Please select a video preset or upload a video file first.');
       }
 
       setStatusMessage('Running YOLOv8 vehicle detection & ByteTrack on GPU...');
@@ -332,6 +337,7 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
         outputUrl,
 
         setSelectedPreset,
+        setActiveJobId,
         setUploadedVideoUrl,
         setVideoName,
         setVideoDuration,

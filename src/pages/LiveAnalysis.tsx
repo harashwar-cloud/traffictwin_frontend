@@ -618,7 +618,11 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       polygon: [...currentPolygon],
       length_meters: parsedLength && parsedLength > 0 ? parsedLength : undefined,
     };
-    setManualRoads((prev: ManualRoad[]) => [...prev, newRoad]);
+    const updated = [...manualRoads, newRoad];
+    setManualRoads(updated);
+    if (activeJobId) {
+      api.saveSessionRoads(activeJobId, updated).catch(() => {});
+    }
     setCurrentPolygon([]);
     setMousePos(null);
     setShowNameDialog(false);
@@ -631,7 +635,24 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
   };
 
   const deleteRoad = (roadIdx: number) => {
-    setManualRoads((prev: ManualRoad[]) => prev.filter((_, i) => i !== roadIdx));
+    const updated = manualRoads.filter((_, i) => i !== roadIdx);
+    setManualRoads(updated);
+    if (activeJobId) {
+      api.saveSessionRoads(activeJobId, updated).catch(() => {});
+    }
+  };
+
+  const renameRoad = (roadIdx: number) => {
+    const road = manualRoads[roadIdx];
+    if (!road) return;
+    const newName = prompt(`Enter custom road name:`, road.name);
+    if (newName && newName.trim()) {
+      const updated = manualRoads.map((r, i) => i === roadIdx ? { ...r, name: newName.trim() } : r);
+      setManualRoads(updated);
+      if (activeJobId) {
+        api.saveSessionRoads(activeJobId, updated).catch(() => {});
+      }
+    }
   };
 
   // Process chosen File
@@ -693,6 +714,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
           const msg = `✓ Upload complete: ${data.filename}. Draw roads on video, then click START ANALYSIS.`;
           if (isPrimary) {
             proc.setVideoName(data.filename);
+            proc.setActiveJobId(data.job_id);
             proc.setStatusMessage(msg);
           } else {
             setLocalActiveJobId(data.job_id);
@@ -757,6 +779,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
     if (isPrimary) {
       proc.resetSession();
       proc.setSelectedPreset(presetId);
+      proc.setActiveJobId(presetId);
       proc.setVideoName(source.name);
       proc.setUploadedVideoUrl(api.getVideoUrl(source.videoUrl));
       proc.setStatusMessage(`Selected ${source.name}. Click START ANALYSIS or Draw ROI.`);
@@ -766,7 +789,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
         wsRef.current = null;
       }
       setLocalPreset(presetId);
-      setLocalActiveJobId(null);
+      setLocalActiveJobId(presetId);
       setLocalIsAnalyzing(false);
       setLocalInferenceComplete(false);
       setLocalLiveTelemetry(null);
@@ -788,10 +811,16 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       alert('Please finish drawing at least one road region before processing.');
       return;
     }
+    const targetId = activeJobId || selectedPreset;
+    if (!targetId) {
+      alert('Please select a video preset or upload a video file first.');
+      return;
+    }
+    console.log(`[INFERENCE TRIGGER] session_id=${targetId} video=${videoName || 'uploaded'}`);
     if (isPrimary) {
       try {
         setDrawingMode(false);
-        await proc.startInference(activeJobId || selectedPreset || 'cam_5', 600, manualRoads);
+        await proc.startInference(targetId, 600, manualRoads);
       } catch (err: any) {
         console.error('Failed to start inference:', err);
       }
@@ -804,7 +833,6 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
       setDrawingMode(false);
       setLocalVideoError(false);
 
-      const targetId = activeJobId || selectedPreset || 'cam_5';
       const res = await api.startInference(targetId, 600, manualRoads);
       setLocalActiveJobId(res.job_id);
       setLocalStatusMessage('✓ Inference started on GPU...');
@@ -1227,9 +1255,20 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
                   className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
                 >
                   <span className="text-cyan-400 font-bold">R{idx + 1}</span>
-                  <span>{road.name}</span>
+                  <span className="font-semibold text-white">{road.name}</span>
                   {road.length_meters && <span className="text-[10px] text-slate-400">({road.length_meters}m)</span>}
-                  <button onClick={() => deleteRoad(idx)} className="text-slate-400 hover:text-red-400 ml-1">
+                  <button
+                    onClick={() => renameRoad(idx)}
+                    title="Rename Road"
+                    className="text-slate-400 hover:text-cyan-300 ml-1 p-0.5"
+                  >
+                    <Edit className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => deleteRoad(idx)}
+                    title="Delete Road"
+                    className="text-slate-400 hover:text-red-400 ml-0.5 p-0.5"
+                  >
                     <X className="w-3 h-3" />
                   </button>
                 </span>

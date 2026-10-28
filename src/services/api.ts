@@ -479,6 +479,103 @@ class TrafficApiService {
     }
     return await res.json();
   }
+
+  async saveSessionRoads(jobId: string, roads: any[]): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/api/sessions/${jobId}/roads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(roads),
+    });
+    if (!res.ok) throw new Error(`Failed to save roads for session ${jobId}`);
+    return await res.json();
+  }
+
+  async getSessionRoads(jobId: string): Promise<any[]> {
+    const res = await fetch(`${this.baseUrl}/api/sessions/${jobId}/roads`);
+    if (!res.ok) return [];
+    return await res.json();
+  }
+
+  async getManualSignalSelection(intersectionId: string): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/manual-selection`);
+    if (!res.ok) throw new Error(`Failed to get manual selection for ${intersectionId}`);
+    return await res.json();
+  }
+
+  async saveManualSignalSelection(intersectionId: string, selection: any): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/manual-selection`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(selection),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any)?.detail || `Failed to save manual selection for ${intersectionId}`);
+    }
+    return await res.json();
+  }
+
+  async extendGreen(
+    intersectionId: string,
+    requestOrPhase: any,
+    extensionSec?: number,
+    requestId?: string,
+    officerId: string = 'officer_1'
+  ): Promise<any> {
+    const bodyData = typeof requestOrPhase === 'object' && requestOrPhase !== null
+      ? requestOrPhase
+      : {
+          intersection_id: intersectionId,
+          current_phase_id: requestOrPhase,
+          extension_sec: extensionSec,
+          request_id: requestId,
+          officer_id: officerId,
+        };
+
+    const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/extend-green`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any)?.detail || `Failed to extend green for ${intersectionId}`);
+    }
+    return await res.json();
+  }
+
+  async startSignalTimer(intersectionId: string, payload: any): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/api/intersections/${intersectionId}/start-signal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any)?.detail || `Failed to start signal timer for ${intersectionId}`);
+    }
+    return await res.json();
+  }
+
+  async getConnectedCameras(forceRefresh: boolean = false): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/api/devices/cameras?force_refresh=${forceRefresh}`);
+    if (!res.ok) throw new Error('Failed to retrieve connected cameras');
+    return await res.json();
+  }
+
+  async selectCameraSource(deviceId: string, cameraIndex?: number): Promise<any> {
+    const formData = new FormData();
+    formData.append('device_id', deviceId);
+    if (cameraIndex !== undefined) {
+      formData.append('camera_index', cameraIndex.toString());
+    }
+    const res = await fetch(`${this.baseUrl}/api/devices/cameras/select`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`Failed to select camera ${deviceId}`);
+    return await res.json();
+  }
 }
 
 export const api = new TrafficApiService();

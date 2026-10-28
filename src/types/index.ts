@@ -476,18 +476,65 @@ export interface VideoReadinessReport {
 
 export interface SignalStatusResponse {
   intersection_id: string;
+  intersection_name?: string;
+  signal_number?: number;
   current_phase_id: string;
   current_phase_name: string;
   served_approaches: string[];
+  served_road_names?: string[];
+  signal_state?: 'GREEN' | 'AMBER' | 'RED' | 'SIMULATED' | string;
+  status_label?: 'Running' | 'Waiting for Approval' | 'Transitioning' | 'Completed' | 'Paused' | string;
   phase_start_time: string;
   phase_end_time?: string | null;
   duration_sec: number;
   elapsed_sec: number;
   remaining_green_sec?: number | null;
+  amber_sec?: number;
+  all_red_sec?: number;
+  amber_end_time?: string | null;
+  all_red_end_time?: string | null;
+  server_time?: string | null;
+  version?: number;
   is_timing_available: boolean;
   is_simulated: boolean;
   recommendation_trigger_sec: number;
   should_trigger_recommendation: boolean;
+}
+
+export interface CameraDeviceItem {
+  device_id: string;
+  index: number;
+  name: string;
+  device_type: string;
+  is_available: boolean;
+  resolution?: string | null;
+  source: string;
+  status_text: string;
+}
+
+export interface CameraDiscoveryResponse {
+  connected_cameras: CameraDeviceItem[];
+  processed_sessions: Array<{
+    source_id: string;
+    name: string;
+    device_type: string;
+    is_available: boolean;
+    job_id?: string;
+    source: string;
+    status_text: string;
+  }>;
+  scan_count: number;
+  source: string;
+  timestamp: string;
+}
+
+export interface StartSignalPayload {
+  intersection_id: string;
+  phase_id: string;
+  green_duration_sec: number;
+  signal_number?: number;
+  served_approaches?: string[];
+  officer_id?: string;
 }
 
 export interface IntersectionAnalytics {
@@ -588,4 +635,26 @@ export interface AuditLogEntry {
   details: Record<string, unknown>;
   recommendation_id?: string | null;
   simulation_id?: string | null;
+}
+
+export interface ManualSignalSelection {
+  intersection_id: string;
+  selected_phase_id: string;
+  served_approaches: string[];
+  served_movements: string[];
+  proposed_green_sec: number;
+  officer_id?: string;
+  note?: string;
+  created_at?: string;
+  status: 'MANUAL_SELECTION' | 'PENDING_OFFICER_APPROVAL' | 'APPROVED_PLAN';
+}
+
+export interface GreenExtensionRequest {
+  intersection_id: string;
+  current_phase_id: string;
+  recommendation_id?: string | null;
+  request_id: string;
+  extension_sec: number;
+  expected_phase_end_time?: string | null;
+  officer_id?: string;
 }
