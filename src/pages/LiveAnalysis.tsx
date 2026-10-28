@@ -8,7 +8,7 @@ import {
   Activity, Upload, RefreshCw, Zap,
   AlertTriangle, ChevronDown, Compass,
   TrendingUp, Car, Truck, Bus, Bike, Edit, Trash2, Check,
-  Plus, Square, RotateCcw, X, Film, Layers, Camera
+  Plus, Square, RotateCcw, X, Film, Layers, Camera, Eye
 } from 'lucide-react';
 
 interface LiveAnalysisProps {

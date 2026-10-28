@@ -365,6 +365,10 @@ export interface ApproachDemand {
   avg_speed_kmh?: number | null;
   moving_count?: number | null;
   stationary_count?: number | null;
+  current_roi_count?: number | null;
+  job_id?: string | null;
+  source_name?: string | null;
+  speed_display?: string | null;
   traffic_state?: TrafficState | null;
   score_queue?: number | null;
   score_arrival?: number | null;
@@ -465,6 +469,7 @@ export interface VideoReadinessReport {
   intersection_id: string;
   is_ready: boolean;
   valid_session_count: number;
+  distinct_road_count?: number;
   required_min: number;
   allowed_max: number;
   coverage_status: 'COMPLETE' | 'PARTIAL' | 'MISSING' | 'INCOMPLETE' | 'CONFIG_ERROR' | string;

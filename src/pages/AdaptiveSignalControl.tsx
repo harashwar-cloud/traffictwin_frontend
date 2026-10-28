@@ -357,14 +357,15 @@ export const AdaptiveSignalControl: React.FC = () => {
   const handleStartSignal = async () => {
     if (!selectedIntersectionId || !configuredPhaseId) return;
     setIsStartingSignal(true);
-    setActionError(null);
     try {
+      const validSessionIds = videoReadiness?.sessions?.filter((s) => s.is_valid).map((s) => s.session_id);
       const updated = await api.startSignalTimer(selectedIntersectionId, {
         intersection_id: selectedIntersectionId,
         phase_id: configuredPhaseId,
         green_duration_sec: configuredGreenSec,
         signal_number: configuredSignalNum,
         served_approaches: configuredApproaches,
+        session_ids: validSessionIds && validSessionIds.length > 0 ? validSessionIds : undefined,
         officer_id: 'officer_1',
       });
       setSignalStatus(updated);
@@ -1049,13 +1050,39 @@ export const AdaptiveSignalControl: React.FC = () => {
             </div>
           </div>
 
+          {/* Signal Readiness Warning (REQUIREMENT 1 & 7) */}
+          {videoReadiness && !videoReadiness.is_ready && (
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.10)',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                borderRadius: '8px',
+                padding: '10px 12px',
+                fontSize: '12px',
+                color: '#f87171',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '8px',
+              }}
+            >
+              <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px', color: '#ef4444' }} />
+              <div>
+                <span style={{ fontWeight: 700, display: 'block' }}>Signal Start Unavailable</span>
+                <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#fca5a5', lineHeight: 1.4 }}>
+                  {videoReadiness.reasons?.[0] || 'Selected video sessions or road approaches do not meet signal readiness requirements.'}
+                </p>
+              </div>
+            </div>
+          )}
+
           <button
             onClick={handleStartSignal}
-            disabled={isStartingSignal}
+            disabled={isStartingSignal || Boolean(videoReadiness && !videoReadiness.is_ready)}
+            title={videoReadiness && !videoReadiness.is_ready ? (videoReadiness.reasons?.[0] || 'Signal start disabled until readiness requirements pass') : 'Start Authoritative Signal Timer'}
             style={{
               width: '100%',
-              backgroundColor: '#10b981',
-              color: '#ffffff',
+              backgroundColor: videoReadiness && !videoReadiness.is_ready ? '#334155' : '#10b981',
+              color: videoReadiness && !videoReadiness.is_ready ? '#94a3b8' : '#ffffff',
               border: 'none',
               borderRadius: '8px',
               padding: '12px',
@@ -1065,13 +1092,13 @@ export const AdaptiveSignalControl: React.FC = () => {
               alignItems: 'center',
               justifyContent: 'center',
               gap: '8px',
-              cursor: isStartingSignal ? 'not-allowed' : 'pointer',
-              boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)',
+              cursor: isStartingSignal || (videoReadiness && !videoReadiness.is_ready) ? 'not-allowed' : 'pointer',
+              boxShadow: videoReadiness && !videoReadiness.is_ready ? 'none' : '0 4px 14px rgba(16, 185, 129, 0.3)',
               transition: 'background-color 0.2s',
             }}
           >
             {isStartingSignal ? <RefreshCw className="animate-spin" size={16} /> : <Play size={16} />}
-            <span>Start Signal</span>
+            <span>{videoReadiness && !videoReadiness.is_ready ? 'Signal Unavailable' : 'Start Signal'}</span>
           </button>
         </div>
 
@@ -1978,93 +2005,135 @@ export const AdaptiveSignalControl: React.FC = () => {
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}>
                 <th style={{ padding: '10px 12px', fontWeight: 700 }}>ROAD NAME</th>
-                <th style={{ padding: '10px 12px', fontWeight: 700 }}>CURRENT VEHICLES</th>
+                <th style={{ padding: '10px 12px', fontWeight: 700 }}>SOURCE</th>
+                <th style={{ padding: '10px 12px', fontWeight: 700 }}>CURRENT ROI COUNT</th>
+                <th style={{ padding: '10px 12px', fontWeight: 700 }}>AVERAGE SPEED</th>
                 <th style={{ padding: '10px 12px', fontWeight: 700 }}>QUEUE LENGTH</th>
                 <th style={{ padding: '10px 12px', fontWeight: 700 }}>ARRIVAL RATE</th>
-                <th style={{ padding: '10px 12px', fontWeight: 700 }}>AVG SPEED</th>
                 <th style={{ padding: '10px 12px', fontWeight: 700 }}>DEMAND STATUS</th>
-                <th style={{ padding: '10px 12px', fontWeight: 700 }}>FRESHNESS</th>
+                <th style={{ padding: '10px 12px', fontWeight: 700 }}>DATA FRESHNESS</th>
+                <th style={{ padding: '10px 12px', fontWeight: 700 }}>READINESS</th>
               </tr>
             </thead>
             <tbody>
-              {approachDemands.map((app, idx) => (
-                <tr
-                  key={app.approach_id || idx}
-                  style={{
-                    borderBottom: '1px solid var(--border-subtle)',
-                    backgroundColor: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.015)',
-                  }}
-                >
-                  <td style={{ padding: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                    {getRoadName(app.approach_id)}
-                    <span style={{ display: 'block', fontSize: '10px', color: 'var(--text-muted)', fontWeight: 400 }}>
-                      ID: {app.road_id || app.approach_id} ({app.direction || 'Approach'})
-                    </span>
-                  </td>
+              {approachDemands.map((app, idx) => {
+                const currentVeh = app.current_roi_count ?? ((app.moving_count || 0) + (app.stationary_count || 0)) ?? 0;
+                const spdDisplay = app.speed_display || (app.avg_speed_kmh && app.avg_speed_kmh > 0 ? `${Number(app.avg_speed_kmh).toFixed(1)} km/h` : 'Waiting for valid speed data');
+                const freshness = app.last_updated ? new Date(app.last_updated).toLocaleTimeString() : 'Live';
+                const qual = String(app.data_quality || 'LIVE').toUpperCase();
+                const readinessLabel = qual === 'LIVE' || qual === 'VALID' ? 'VALID' : qual === 'STALE' ? 'STALE' : qual === 'MISSING' ? 'WAITING' : 'UNAVAILABLE';
+                const readinessColor = readinessLabel === 'VALID' ? '#10b981' : readinessLabel === 'WAITING' ? '#f59e0b' : readinessLabel === 'STALE' ? '#f97316' : '#94a3b8';
 
-                  <td style={{ padding: '12px', fontWeight: 700 }}>
-                    {((app.moving_count || 0) + (app.stationary_count || 0)) || (app as any).current_roi_count || 0} veh
-                  </td>
+                return (
+                  <tr
+                    key={app.approach_id || idx}
+                    style={{
+                      borderBottom: '1px solid var(--border-subtle)',
+                      backgroundColor: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.015)',
+                    }}
+                  >
+                    {/* 1. Road Name */}
+                    <td style={{ padding: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {getRoadName(app.approach_id)}
+                      <span style={{ display: 'block', fontSize: '10px', color: 'var(--text-muted)', fontWeight: 400 }}>
+                        ID: {app.road_id || app.approach_id} ({app.direction || 'Approach'})
+                      </span>
+                    </td>
 
-                  <td style={{ padding: '12px' }}>
-                    {app.queue_length_veh !== undefined && app.queue_length_veh !== null
-                      ? `${app.queue_length_veh} veh`
-                      : 'Unavailable'}
-                  </td>
+                    {/* 2. Source */}
+                    <td style={{ padding: '12px', color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '11px' }}>
+                      {app.job_id || app.source_name || (selectedIntersectionId ? `Session ${idx + 1}` : 'Camera Feed')}
+                    </td>
 
-                  <td style={{ padding: '12px' }}>
-                    {app.arrival_rate_veh_per_min !== undefined && app.arrival_rate_veh_per_min !== null
-                      ? `${app.arrival_rate_veh_per_min.toFixed(1)} veh/min`
-                      : 'Unavailable'}
-                  </td>
+                    {/* 3. Current ROI Count */}
+                    <td style={{ padding: '12px' }}>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '3px 8px',
+                          borderRadius: '6px',
+                          backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                          color: '#10b981',
+                          fontWeight: 800,
+                          fontSize: '12px',
+                        }}
+                      >
+                        {currentVeh} veh
+                      </span>
+                    </td>
 
-                  <td style={{ padding: '12px' }}>
-                    {app.avg_speed_kmh !== undefined && app.avg_speed_kmh !== null
-                      ? `${Number(app.avg_speed_kmh).toFixed(1)} km/h`
-                      : 'Unavailable'}
-                  </td>
+                    {/* 4. Average Speed */}
+                    <td style={{ padding: '12px', fontWeight: 600, color: spdDisplay.includes('km/h') ? '#38bdf8' : 'var(--text-muted)' }}>
+                      {spdDisplay}
+                    </td>
 
-                  <td style={{ padding: '12px' }}>
-                    <span
-                      style={{
-                        padding: '3px 8px',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        backgroundColor:
-                          app.traffic_state === 'HIGH'
-                            ? 'rgba(239, 68, 68, 0.15)'
-                            : app.traffic_state === 'MEDIUM'
-                            ? 'rgba(234, 179, 8, 0.15)'
-                            : 'rgba(16, 185, 129, 0.15)',
-                        color:
-                          app.traffic_state === 'HIGH'
-                            ? '#ef4444'
-                            : app.traffic_state === 'MEDIUM'
-                            ? '#eab308'
-                            : '#10b981',
-                      }}
-                    >
-                      {app.traffic_state || 'NORMAL'}
-                    </span>
-                  </td>
+                    {/* 5. Queue Length */}
+                    <td style={{ padding: '12px', color: app.queue_length_veh ? '#f59e0b' : 'var(--text-muted)', fontWeight: 600 }}>
+                      {app.queue_length_veh !== undefined && app.queue_length_veh !== null
+                        ? `${app.queue_length_veh} veh`
+                        : 'Unavailable'}
+                    </td>
 
-                  <td style={{ padding: '12px' }}>
-                    <span
-                      style={{
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        fontSize: '10px',
-                        fontWeight: 700,
-                        backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                        color: '#38bdf8',
-                      }}
-                    >
-                      {app.data_quality || 'LIVE'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+                    {/* 6. Arrival Rate */}
+                    <td style={{ padding: '12px', color: 'var(--text-muted)' }}>
+                      {app.arrival_rate_veh_per_min !== undefined && app.arrival_rate_veh_per_min !== null
+                        ? `${app.arrival_rate_veh_per_min.toFixed(1)} veh/min`
+                        : 'Unavailable'}
+                    </td>
+
+                    {/* 7. Demand Status */}
+                    <td style={{ padding: '12px' }}>
+                      <span
+                        style={{
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          backgroundColor:
+                            app.traffic_state === 'HIGH' || app.traffic_state === 'CRITICAL'
+                              ? 'rgba(239, 68, 68, 0.15)'
+                              : app.traffic_state === 'MEDIUM'
+                              ? 'rgba(234, 179, 8, 0.15)'
+                              : 'rgba(16, 185, 129, 0.15)',
+                          color:
+                            app.traffic_state === 'HIGH' || app.traffic_state === 'CRITICAL'
+                              ? '#ef4444'
+                              : app.traffic_state === 'MEDIUM'
+                              ? '#eab308'
+                              : '#10b981',
+                        }}
+                      >
+                        {app.traffic_state || 'NORMAL'}
+                      </span>
+                    </td>
+
+                    {/* 8. Data Freshness */}
+                    <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '11px' }}>
+                      {freshness}
+                    </td>
+
+                    {/* 9. Readiness */}
+                    <td style={{ padding: '12px' }}>
+                      <span
+                        style={{
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          fontSize: '10px',
+                          fontWeight: 800,
+                          letterSpacing: '0.05em',
+                          backgroundColor: `${readinessColor}20`,
+                          color: readinessColor,
+                          border: `1px solid ${readinessColor}40`,
+                        }}
+                      >
+                        {readinessLabel}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
