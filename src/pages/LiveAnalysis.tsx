@@ -357,6 +357,7 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
   const [localStatusMessage, setLocalStatusMessage] = useState<string>('');
   const [localVideoError, setLocalVideoError] = useState<boolean>(false);
   const [localManualRoads, setLocalManualRoads] = useState<ManualRoad[]>([]);
+  const [displayMode, setDisplayMode] = useState<'analytics' | 'clean'>('analytics');
 
   // Primary card binds directly to application-level VideoProcessingContext
   const selectedPreset = isPrimary ? proc.selectedPreset : localPreset;
@@ -1323,6 +1324,20 @@ const VideoSessionCard: React.FC<VideoSessionCardProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           {hasVideoSource && (
             <>
+              {/* Display Mode Toggle (Clean Video Mode vs Analytics Mode) */}
+              <button
+                onClick={() => setDisplayMode((prev) => (prev === 'analytics' ? 'clean' : 'analytics'))}
+                className={`flex items-center px-2.5 py-1.5 rounded-xl text-xs font-mono font-semibold transition-all border ${
+                  displayMode === 'clean'
+                    ? 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-md'
+                    : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700'
+                }`}
+                title={displayMode === 'clean' ? 'Switch to Full Analytics Mode' : 'Switch to Clean Video Mode'}
+              >
+                <Eye className="w-3.5 h-3.5 mr-1 text-amber-400" />
+                {displayMode === 'clean' ? 'Clean' : 'Analytics'}
+              </button>
+
               {/* ROI Drawing Toggle */}
               <button
                 onClick={() => setDrawingMode((prev) => !prev)}

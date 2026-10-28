@@ -2017,7 +2017,7 @@ export const AdaptiveSignalControl: React.FC = () => {
             </thead>
             <tbody>
               {approachDemands.map((app, idx) => {
-                const currentVeh = app.current_roi_count ?? ((app.moving_count || 0) + (app.stationary_count || 0)) ?? 0;
+                const currentVeh = app.current_roi_count ?? ((app.moving_count || 0) + (app.stationary_count || 0));
                 const spdDisplay = app.speed_display || (app.avg_speed_kmh && app.avg_speed_kmh > 0 ? `${Number(app.avg_speed_kmh).toFixed(1)} km/h` : 'Waiting for valid speed data');
                 const freshness = app.last_updated ? new Date(app.last_updated).toLocaleTimeString() : 'Live';
                 const qual = String(app.data_quality || 'LIVE').toUpperCase();
